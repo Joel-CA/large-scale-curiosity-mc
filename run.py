@@ -20,7 +20,7 @@ from cppo_agent import PpoOptimizer
 from dynamics import Dynamics, UNet
 from utils import random_agent_ob_mean_std
 from wrappers import MontezumaInfoWrapper, make_mario_env, make_robo_pong, make_robo_hockey, \
-    make_multi_pong, AddRandomStateToInfo, MaxAndSkipEnv, ProcessFrame84, ExtraTimeLimit
+    make_multi_pong, make_minecraft_env, AddRandomStateToInfo, MaxAndSkipEnv, ProcessFrame84, ExtraTimeLimit
 
 
 def start_experiment(**args):
@@ -139,6 +139,11 @@ def make_env_all_params(rank, add_monitor, args):
             env = make_robo_pong()
         elif args["env"] == "hockey":
             env = make_robo_hockey()
+    elif args["env_kind"] == 'minecraft':
+        env = make_minecraft_env(
+            env_name=args.get('minecraft_env', 'MineRLNavigate-v0'),
+            max_episode_steps=args['max_episode_steps'],
+        )
 
     if add_monitor:
         env = Monitor(env, osp.join(logger.get_dir(), '%.2i' % rank))
@@ -205,6 +210,10 @@ if __name__ == '__main__':
     parser.add_argument('--layernorm', type=int, default=0)
     parser.add_argument('--feat_learning', type=str, default="none",
                         choices=["none", "idf", "vaesph", "vaenonsph", "pix2pix"])
+    parser.add_argument('--minecraft_env', type=str, default='MineRLNavigate-v0',
+                        help='MineRL environment id, used when --env_kind=minecraft. '
+                             'E.g. MineRLNavigate-v0, MineRLNavigateDense-v0, '
+                             'MineRLObtainDiamond-v0.')
 
     args = parser.parse_args()
 

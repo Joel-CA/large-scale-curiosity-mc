@@ -351,3 +351,126 @@ def make_robo_hockey(frame_stack=True):
         env = FrameStack(env, 4)
     env = AddRandomStateToInfo(env)
     return env
+
+
+# ---------------------------------------------------------------------------
+# Minecraft / MineRL wrappers
+# ---------------------------------------------------------------------------
+
+# A curated set of discrete actions for open-world exploration.
+# Each entry is a dict of MineRL action overrides; keys not listed default to
+# the environment's no-op values (all zeros / identity camera).
+_MINECRAFT_ACTIONS = [
+    # 0: no-op
+    {},
+    # 1: move forward
+    {"forward": 1},
+    # 2: move backward
+    {"back": 1},
+    # 3: strafe left
+    {"left": 1},
+    # 4: strafe right
+    {"right": 1},
+    # 5: jump
+    {"jump": 1},
+    # 6: forward + jump (ascending slopes / obstacles)
+    {"forward": 1, "jump": 1},
+    # 7: attack (break blocks)
+    {"attack": 1},
+    # 8: forward + attack (mine while walking)
+    {"forward": 1, "attack": 1},
+    # 9: camera turn left
+    {"camera": [-0.0, -10.0]},
+    # 10: camera turn right
+    {"camera": [-0.0, 10.0]},
+    # 11: camera look up
+    {"camera": [-10.0, 0.0]},
+    # 12: camera look down
+    {"camera": [10.0, 0.0]},
+    # 13: sprint forward
+    {"forward": 1, "sprint": 1},
+    # 14: sneak (careful movement)
+    {"sneak": 1},
+]
+
+
+class MinecraftPOVWrapper(gym.ObservationWrapper):
+    """Extracts the first-person RGB image ('pov') from MineRL's Dict
+    observation space, converts it to grayscale, and resizes it to 84x84.
+    Output shape is (84, 84, 1) uint8, matching ProcessFrame84's output so
+    the rest of the pipeline (FrameStack, etc.) works without changes.
+    """
+
+    def __init__(self, env):
+        super(MinecraftPOVWrapper, self).__init__(env)
+        self.observation_space = gym.spaces.Box(
+            low=0, high=255, shape=(84, 84, 1), dtype=np.uint8
+        )
+
+    def observation(self, obs):
+        # MineRL observations are dicts; 'pov' is the RGB image.
+        pov = obs["pov"]  # shape: (H, W, 3), dtype: uint8
+        img = pov.astype(np.float32)
+        # Luminance-weighted grayscale (same coefficients as ProcessFrame84)
+        gray = img[:, :, 0] * 0.299 + img[:, :, 1] * 0.587 + img[:, :, 2] * 0.114
+        resized = np.array(
+            Image.fromarray(gray).resize((84, 84), resample=Image.BILINEAR),
+            dtype=np.uint8,
+        )
+        return resized.reshape(84, 84, 1)
+
+
+class MinecraftDiscreteActionWrapper(gym.ActionWrapper):
+    """Converts a single integer action index into the structured action dict
+    that MineRL expects.  The action set is defined by _MINECRAFT_ACTIONS.
+    All keys not overridden by an entry default to the environment's no-op
+    action (provided by ``env.action_space.noop()``).
+    """
+
+    def __init__(self, env):
+        super(MinecraftDiscreteActionWrapper, self).__init__(env)
+        self._noop = env.action_space.noop()
+        self._actions = _MINECRAFT_ACTIONS
+        self.action_space = gym.spaces.Discrete(len(self._actions))
+
+    def action(self, index):
+        act = dict(self._noop)  # start from no-op
+        act.update(self._actions[index])
+        return act
+
+
+def make_minecraft_env(env_name="MineRLNavigate-v0",
+                       frame_skip=4,
+                       frame_stack=True,
+                       max_episode_steps=18000):
+    """Build a curiosity-ready Minecraft environment using MineRL.
+
+    The pipeline mirrors the Atari setup:
+      MineRL env  ->  discretise actions  ->  extract & resize POV
+      ->  frame skip  ->  frame stack  ->  time limit  ->  random-state info
+
+    Args:
+        env_name: Any MineRL environment id (e.g. ``MineRLNavigate-v0``,
+            ``MineRLNavigateDense-v0``, ``MineRLObtainDiamond-v0``).
+        frame_skip: Number of environment steps per agent action.
+        frame_stack: Whether to stack the last 4 frames (required by the
+            default CNN policy).
+        max_episode_steps: Hard episode time-limit in env steps (before
+            frame-skip is applied).
+
+    Returns:
+        A wrapped gym.Env compatible with the rest of the codebase.
+    """
+    import minerl  # noqa: F401  # registers MineRL envs with gym
+
+    from baselines.common.atari_wrappers import FrameStack
+
+    env = gym.make(env_name)
+    env = MinecraftDiscreteActionWrapper(env)  # Dict -> Discrete
+    env = MinecraftPOVWrapper(env)             # Dict obs -> (84, 84, 1)
+    env = FrameSkip(env, frame_skip)           # action repeat
+    if frame_stack:
+        env = FrameStack(env, 4)               # stack last 4 frames
+    env = ExtraTimeLimit(env, max_episode_steps // frame_skip)
+    env = AddRandomStateToInfo(env)
+    return env
